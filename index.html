@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>工业声音生成器 · Industrial Sound Maker</title>
+  <meta name="description" content="用 Web Audio 合成的工业声音生成器：敲石头、敲管道、机器撞击、机器转动、铃铛、镲、牛铃、沉闷机器声，附机器喷气像素动画。">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⚙</span>
+      <div>
+        <h1>工业声音生成器</h1>
+        <p class="sub">INDUSTRIAL SOUND MAKER · 全部声音由 Web Audio 实时合成</p>
+      </div>
+    </div>
+    <div class="master">
+      <label>总音量 <input id="masterVol" type="range" min="0" max="1" step="0.01" value="0.8"></label>
+      <label>车间混响 <input id="reverbWet" type="range" min="0" max="0.8" step="0.01" value="0.28"></label>
+      <button id="panic" class="btn danger" title="停止所有声音">全部停止</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel machine-panel">
+      <div class="panel-head">
+        <h2>机器</h2>
+        <span class="hint">点击画面里的喷气口也能喷气</span>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="pixel" width="160" height="90"></canvas>
+        <div id="startOverlay" class="overlay">
+          <button id="startBtn" class="btn big">▶ 启动机器</button>
+          <p>浏览器需要一次点击才能开启音频</p>
+        </div>
+      </div>
+
+      <div class="loops" id="loops"></div>
+    </section>
+
+    <section class="panel pads-panel">
+      <div class="panel-head">
+        <h2>敲击</h2>
+        <span class="hint">键盘 1–7 触发 · 8/9 切换机器 · 空格 播放/停止</span>
+      </div>
+      <div class="pads" id="pads"></div>
+    </section>
+
+    <section class="panel seq-panel">
+      <div class="panel-head">
+        <h2>音序器</h2>
+        <div class="seq-controls">
+          <button id="seqPlay" class="btn accent">▶ 播放</button>
+          <label>BPM <input id="bpm" type="number" min="50" max="220" value="124"> <input id="bpmRange" type="range" min="50" max="220" value="124"></label>
+          <button id="seqRandom" class="btn">随机</button>
+          <button id="seqClear" class="btn">清空</button>
+        </div>
+      </div>
+      <div class="seq-grid" id="seqGrid"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>无采样文件 · 所有音色（石头、管道、撞击、铃铛、镲、牛铃、喷气、转动、沉闷机器声）均为参数化合成，每次敲击略有随机变化。点击 <b>WAV</b> 可离线渲染并下载为采样。</p>
+  </footer>
+
+  <script src="js/synth.js"></script>
+  <script src="js/pixel.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
