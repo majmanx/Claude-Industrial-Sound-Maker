@@ -5,6 +5,17 @@
 (() => {
   const $ = s => document.querySelector(s);
 
+  /* ---------- error capture (shown in the diagnostics dialog) ---------- */
+  const errLog = [];
+  function logErr(kind, msg) {
+    errLog.push(`[${new Date().toISOString().slice(11, 19)}] ${kind}: ${msg}`);
+    if (errLog.length > 60) errLog.shift();
+  }
+  window.addEventListener('error', e => logErr('error', (e.message || '') + (e.filename ? ` @${e.filename.split('/').pop()}:${e.lineno}` : '')));
+  window.addEventListener('unhandledrejection', e => logErr('promise', e.reason && (e.reason.message || String(e.reason))));
+  const origConsoleError = console.error.bind(console);
+  console.error = (...a) => { logErr('console', a.map(x => (x && x.message) || String(x)).join(' ')); origConsoleError(...a); };
+
   /* ---------- sound registry ---------- */
   const PADS = [
     { id: 'stone',   key: '1', color: '#9aa08c', fn: Synth.stone },
@@ -85,31 +96,51 @@
   });
 
   /* ---------- audio state ---------- */
-  let ctx = null, bus = null, recorder = null;
+  let ctx = null, bus = null, recorder = null, meter = null, tickTimer = null;
+  let lastSuspendHint = 0;
   const active = {};
   const pix = new PixelMachine($('#pixel'));
 
+  function resumeCtx() {
+    // iOS reports 'interrupted' (not 'suspended') after a phone call or app switch
+    if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume().catch(() => {});
+  }
   function ensureAudio() {
-    if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return true; }
+    if (ctx) { resumeCtx(); return true; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) { toast(T().noAudio); return false; }
-    ctx = new AC({ latencyHint: 'interactive' });
+    try {
+      ctx = new AC({ latencyHint: 'interactive' });
+    } catch (err) {
+      logErr('audio', err.message);
+      ctx = new AC();
+    }
     bus = Synth.buildMaster(ctx);
     bus.route();
     bus.master.gain.value = parseFloat($('#masterVol').value);
     bus.wet.gain.value = parseFloat($('#reverbWet').value);
-    setInterval(tick, 40);
+    meter = ctx.createAnalyser(); meter.fftSize = 1024;
+    bus.out.connect(meter);
+    resumeCtx();
+    tickTimer = setInterval(tick, 40);
     $('#startOverlay').classList.add('hidden');
     return true;
+  }
+  function checkRunning() {
+    if (!ctx || ctx.state === 'running') return;
+    resumeCtx();
+    const now = Date.now();
+    if (now - lastSuspendHint > 6000) { lastSuspendHint = now; toast(T().suspendedHint); }
   }
 
   function playPad(id, when) {
     if (!ensureAudio()) return;
     const p = padById[id];
     const t = when ?? ctx.currentTime;
-    p.fn(ctx, bus.input, t, {});
+    try { p.fn(ctx, bus.input, t, {}); } catch (err) { logErr('synth:' + id, err.message); }
     const delay = Math.max(0, (t - ctx.currentTime) * 1000);
     setTimeout(() => { pix.trigger(id); flashPad(id); }, delay);
+    setTimeout(checkRunning, 400);
   }
   function flashPad(id) {
     const el = document.querySelector(`.pad[data-id="${id}"]`);
@@ -145,6 +176,7 @@
 
   /* ---------- scheduler tick ---------- */
   function tick() {
+    if (!ctx) return;
     const ahead = ctx.currentTime + 0.35;
     for (const id in active) active[id].scheduleUntil(ahead);
     if (seq.playing) {
@@ -299,7 +331,7 @@
       <span class="chip-val"></span>`;
     const input = row.querySelector('input'), val = row.querySelector('.chip-val');
     const show = () => { val.textContent = sl.fmt(Synth.chip[sl.key]); };
-    input.addEventListener('input', e => { Synth.setChip({ [sl.key]: parseFloat(e.target.value) }); show(); });
+    input.addEventListener('input', e => { Synth.setChip({ [sl.key]: parseFloat(e.target.value) }); if (bus) bus.sync(); show(); });
     row._show = show;
     chipGrid.appendChild(row);
   });
@@ -446,6 +478,106 @@
   $('#swing').addEventListener('input', e => { seq.swing = parseFloat(e.target.value) / 100; $('#swingVal').textContent = `${e.target.value}%`; });
   $('#bpmRange').addEventListener('input', e => syncBpm(parseFloat(e.target.value)));
 
+
+  /* ---------- diagnostics ("报错") ---------- */
+  const diag = $('#diag');
+  const meterBuf = new Float32Array(1024);
+  let meterRaf = 0;
+  function stateText() {
+    if (!ctx) return T().notStarted;
+    let s = `${ctx.state} · ${ctx.sampleRate} Hz`;
+    if (ctx.baseLatency) s += ` · ${Math.round(ctx.baseLatency * 1000)} ms`;
+    return s;
+  }
+  function buildReport() {
+    const t = T();
+    const lines = [
+      `Industrial Sound Maker · ${new Date().toISOString()}`,
+      `UA: ${navigator.userAgent}`,
+      `lang: ${lang} · hosted: ${hosted} · viewport: ${window.innerWidth}×${window.innerHeight} @${window.devicePixelRatio || 1}x`,
+      `audio: ${stateText()} · engine: ${bus ? bus.engine : '—'} · master: ${$('#masterVol').value} · wet: ${$('#reverbWet').value}`,
+      `chip: ${JSON.stringify(Synth.chip)}`,
+      `loops: ${Object.keys(active).join(', ') || '—'} · seq: ${seq.playing ? 'playing' : 'stopped'} @${seq.bpm} · rec: ${rec.active}`,
+      '',
+      errLog.length ? errLog.join('\n') : t.noErrors,
+    ];
+    return lines.join('\n');
+  }
+  function refreshDiag() {
+    $('#diagState').textContent = stateText();
+    $('#diagEngine').textContent = bus ? bus.engine : '—';
+    $('#diagLog').value = buildReport();
+  }
+  function meterLoop() {
+    if (diag.classList.contains('hidden')) return;
+    let db = -Infinity;
+    if (meter) {
+      meter.getFloatTimeDomainData(meterBuf);
+      let p = 0;
+      for (let i = 0; i < meterBuf.length; i++) { const a = Math.abs(meterBuf[i]); if (a > p) p = a; }
+      if (p > 0) db = 20 * Math.log10(p);
+    }
+    $('#meterBar').style.width = `${Math.max(0, Math.min(100, ((db + 60) / 60) * 100))}%`;
+    $('#meterVal').textContent = db === -Infinity ? '-∞ dB' : `${db.toFixed(0)} dB`;
+    $('#diagState').textContent = stateText();
+    meterRaf = requestAnimationFrame(meterLoop);
+  }
+  function openDiag() { diag.classList.remove('hidden'); refreshDiag(); cancelAnimationFrame(meterRaf); meterLoop(); }
+  function closeDiag() { diag.classList.add('hidden'); cancelAnimationFrame(meterRaf); }
+  $('#bugBtn').addEventListener('click', openDiag);
+  $('#diagClose').addEventListener('click', closeDiag);
+  diag.addEventListener('click', e => { if (e.target === diag) closeDiag(); });
+  $('#testTone').addEventListener('click', () => {
+    // straight to the speakers, bypassing the whole bus: isolates device problems
+    if (!ensureAudio()) return;
+    const now = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = 440;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.25, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+    o.connect(g).connect(ctx.destination);
+    o.start(now); o.stop(now + 0.55);
+    // and one through the bus, a fifth up
+    const o2 = ctx.createOscillator(); o2.type = 'square'; o2.frequency.value = 660;
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, now + 0.6);
+    g2.gain.exponentialRampToValueAtTime(0.25, now + 0.61);
+    g2.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+    o2.connect(g2).connect(bus.input);
+    o2.start(now + 0.6); o2.stop(now + 1.15);
+    setTimeout(refreshDiag, 200);
+  });
+  $('#restartAudio').addEventListener('click', async () => {
+    if (rec.active) { clearInterval(rec.timer); rec.active = false; recBtn.classList.remove('rec'); recBtn.textContent = T().record; }
+    stopSeq();
+    if (ctx) {
+      for (const id in active) {
+        try { active[id].stop(ctx.currentTime); } catch (e) { /* ignore */ }
+        delete active[id];
+        document.querySelector(`.loop[data-id="${id}"] .toggle`).classList.remove('on');
+        syncLoopVisual(id);
+      }
+      clearInterval(tickTimer);
+      try { await ctx.close(); } catch (e) { /* ignore */ }
+    }
+    ctx = null; bus = null; recorder = null; meter = null;
+    ensureAudio();
+    playPad('steam');
+    setTimeout(refreshDiag, 300);
+  });
+  $('#copyReport').addEventListener('click', async () => {
+    refreshDiag();
+    const text = $('#diagLog').value;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(T().copied);
+    } catch (e) {
+      const ta = $('#diagLog'); ta.focus(); ta.select();
+      try { document.execCommand('copy'); toast(T().copied); } catch (e2) { toast(T().saveFailed); }
+    }
+  });
+
   /* ---------- keyboard (by physical key code, layout independent) ---------- */
   const codeMap = {};
   const codeOf = k => /^[0-9]$/.test(k) ? `Digit${k}` : `Key${k}`;
@@ -453,13 +585,15 @@
   LOOPS.forEach(l => codeMap[codeOf(l.key)] = () => toggleLoop(l.id));
   window.addEventListener('keydown', e => {
     if (e.repeat || e.target.matches('input, textarea, select')) return;
+    if (e.code === 'Escape') { closeDiag(); return; }
     if (e.code === 'Space') { e.preventDefault(); seq.playing ? stopSeq() : startSeq(); return; }
     if (e.code === 'KeyP') { e.preventDefault(); setChipMode(!Synth.chip.on); return; }
     const fn = codeMap[e.code];
     if (fn) { e.preventDefault(); fn(); }
   });
 
-  document.addEventListener('pointerdown', () => { if (ctx && ctx.state === 'suspended') ctx.resume(); }, { passive: true });
+  ['pointerdown', 'touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, resumeCtx, { passive: true }));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) resumeCtx(); });
 
   applyLang();
 })();

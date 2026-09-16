@@ -212,31 +212,93 @@ const Synth = (() => {
     input.connect(wetHp).connect(conv).connect(wet).connect(comp);
     comp.connect(master);
 
-    // bit/sample-rate crusher, inserted only while chip mode is on
+    // bit/sample-rate crusher, created lazily the first time chip mode is
+    // switched on, so the plain path is exactly master → out → destination.
+    // AudioWorklet is preferred; ScriptProcessor is the fallback.
     const out = ctx.createGain();
-    const crusher = ctx.createScriptProcessor(1024, 2, 2);
-    const states = [{ phase: 1, held: 0 }, { phase: 1, held: 0 }];
-    crusher.onaudioprocess = e => {
-      for (let c = 0; c < 2; c++) {
-        const inp = e.inputBuffer.getChannelData(c), o = e.outputBuffer.getChannelData(c);
-        if (chip.on) crushBlock(inp, o, states[c], ctx.sampleRate); else o.set(inp);
-      }
-    };
-    let routed = null;
     const offline = typeof OfflineAudioContext !== 'undefined' && ctx instanceof OfflineAudioContext;
+    let crusher = null, kind = null, routed = null, pending = null;
+    async function ensureCrusher() {
+      if (crusher) return;
+      if (ctx.audioWorklet && typeof AudioWorkletNode !== 'undefined') {
+        try {
+          const url = URL.createObjectURL(new Blob([CRUSHER_WORKLET], { type: 'application/javascript' }));
+          await ctx.audioWorklet.addModule(url);
+          URL.revokeObjectURL(url);
+          crusher = new AudioWorkletNode(ctx, 'ism-crusher', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+          kind = 'worklet';
+          return;
+        } catch (e) { /* CSP or unsupported: fall back below */ }
+      }
+      const sp = ctx.createScriptProcessor(1024, 2, 2);
+      const states = [{ phase: 1, held: 0 }, { phase: 1, held: 0 }];
+      sp.onaudioprocess = e => {
+        for (let c = 0; c < 2; c++) {
+          const inp = e.inputBuffer.getChannelData(c), o = e.outputBuffer.getChannelData(c);
+          if (chip.on) crushBlock(inp, o, states[c], ctx.sampleRate); else o.set(inp);
+        }
+      };
+      crusher = sp; kind = 'script';
+    }
+    function sync() {
+      if (kind !== 'worklet' || !crusher) return;
+      const p = crusher.parameters;
+      p.get('on').value = chip.on ? 1 : 0;
+      p.get('bits').value = chip.bits;
+      p.get('rate').value = chip.rate;
+      p.get('noise').value = chip.noise;
+    }
     function route() {
       const want = chip.on && !offline ? 'crush' : 'dry';
-      if (want === routed) return;
-      try { master.disconnect(); } catch (e) { /* not connected yet */ }
-      try { crusher.disconnect(); } catch (e) { /* ignore */ }
-      if (want === 'crush') { master.connect(crusher); crusher.connect(out); }
-      else master.connect(out);
-      routed = want;
+      if (want === routed) { sync(); return pending || Promise.resolve(); }
+      const run = async () => {
+        if (want === 'crush') await ensureCrusher();
+        try { master.disconnect(); } catch (e) { /* not connected yet */ }
+        if (crusher) { try { crusher.disconnect(); } catch (e) { /* ignore */ } }
+        if (want === 'crush') { master.connect(crusher); crusher.connect(out); }
+        else master.connect(out);
+        routed = want;
+        sync();
+      };
+      pending = run().catch(err => { console.error(err); if (routed !== 'dry') { try { master.disconnect(); } catch (e) {} master.connect(out); routed = 'dry'; } });
+      return pending;
     }
     route();
     out.connect(ctx.destination);
-    return { input, wet, master, comp, out, route };
+    return { input, wet, master, comp, out, route, sync, get engine() { return kind || 'none'; } };
   }
+
+  const CRUSHER_WORKLET = `
+    class Crusher extends AudioWorkletProcessor {
+      static get parameterDescriptors() {
+        return [{ name: 'on', defaultValue: 0 }, { name: 'bits', defaultValue: 6 },
+                { name: 'rate', defaultValue: 11025 }, { name: 'noise', defaultValue: 0.25 }];
+      }
+      constructor() { super(); this.st = [{ phase: 1, held: 0 }, { phase: 1, held: 0 }]; }
+      process(inputs, outputs, params) {
+        const inp = inputs[0], out = outputs[0];
+        if (!inp || !inp.length) return true;
+        const on = params.on[0] > 0.5, step = Math.pow(2, params.bits[0] - 1);
+        const inc = params.rate[0] / sampleRate, na = params.noise[0] * params.noise[0] * 0.15;
+        for (let c = 0; c < out.length; c++) {
+          const i = inp[c] || inp[0], o = out[c], st = this.st[c] || (this.st[c] = { phase: 1, held: 0 });
+          if (!on) { o.set(i); continue; }
+          for (let n = 0; n < i.length; n++) {
+            st.phase += inc;
+            if (st.phase >= 1) {
+              st.phase -= 1;
+              let x = i[n] + (na ? (Math.random() * 2 - 1) * na : 0);
+              x = x > 1 ? 1 : x < -1 ? -1 : x;
+              st.held = Math.round(x * step) / step;
+            }
+            o[n] = st.held;
+          }
+        }
+        return true;
+      }
+    }
+    registerProcessor('ism-crusher', Crusher);
+  `;
 
   /* ============================================================
      ONE-SHOTS

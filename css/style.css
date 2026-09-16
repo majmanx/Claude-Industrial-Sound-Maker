@@ -224,6 +224,17 @@ body.chip .brand-mark { color: var(--chip); }
 :root { --chip: #d048c8; }
 .seq-controls .val { color: var(--text); min-width: 32px; display: inline-block; }
 
+/* ---------- diagnostics ---------- */
+.diag { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 16px; background: rgba(8,9,12,0.8); }
+.diag.hidden { display: none; }
+.diag-box { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow: auto; background: var(--panel); padding: 14px; display: grid; gap: 10px; }
+.diag-row { display: grid; grid-template-columns: 90px 1fr auto; align-items: center; gap: 10px; color: var(--muted); }
+.diag-row .val { color: var(--text); font-variant-numeric: tabular-nums; }
+.meter { height: 12px; background: var(--panel-2); box-shadow: inset 2px 2px 0 var(--bevel-d), inset -2px -2px 0 var(--bevel-l); }
+.meter-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--green) 0 70%, var(--accent-2) 70% 90%, var(--danger) 90%); transition: width 0.05s linear; }
+.diag-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#diagLog { width: 100%; background: var(--panel-2); color: var(--text); border: 0; padding: 8px; resize: vertical; font-size: 12px; line-height: 1.4; }
+
 /* ---------- sequencer ---------- */
 .seq-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--muted); }
 .seq-controls label { display: flex; align-items: center; gap: 6px; }

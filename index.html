@@ -27,6 +27,7 @@
       <label><span data-i18n="reverb">车间混响</span> <input id="reverbWet" type="range" min="0" max="0.8" step="0.01" value="0.28"></label>
       <button id="recBtn" class="btn px rec-btn" data-i18n="record">● 录制</button>
       <button id="panic" class="btn px danger" data-i18n="stopAll">全部停止</button>
+      <button id="bugBtn" class="btn px" data-i18n="bug">报错</button>
     </div>
   </header>
 
@@ -80,6 +81,25 @@
     <p data-i18n="footer">无采样文件 · 所有音色均为参数化合成，每次敲击略有随机变化。「录制」会记录你演奏的一切，停止后即可下载。</p>
   </footer>
   <div id="toast" class="toast px" role="status" aria-live="polite"></div>
+
+  <div id="diag" class="diag hidden" role="dialog" aria-modal="true">
+    <div class="diag-box px">
+      <div class="panel-head">
+        <h2 data-i18n="diag">诊断</h2>
+        <button id="diagClose" class="btn px" data-i18n="close">关闭</button>
+      </div>
+      <div class="diag-row"><span data-i18n="outputLevel">输出电平</span><div class="meter px"><div id="meterBar" class="meter-bar"></div></div><span id="meterVal" class="val">-∞ dB</span></div>
+      <div class="diag-row"><span data-i18n="audioState">音频状态</span><span id="diagState" class="val">—</span></div>
+      <div class="diag-row"><span data-i18n="engine">压缩引擎</span><span id="diagEngine" class="val">—</span></div>
+      <div class="diag-actions">
+        <button id="testTone" class="btn px accent" data-i18n="testTone">测试音</button>
+        <button id="restartAudio" class="btn px" data-i18n="restartAudio">重启音频</button>
+        <button id="copyReport" class="btn px" data-i18n="copyReport">复制报告</button>
+      </div>
+      <p class="hint" data-i18n="muteHint">如果「测试音」也没声：检查静音键、媒体音量或蓝牙输出。</p>
+      <textarea id="diagLog" class="px" readonly rows="8" spellcheck="false"></textarea>
+    </div>
+  </div>
 
   <script src="js/i18n.js"></script>
   <script src="js/synth.js"></script>
