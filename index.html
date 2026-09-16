@@ -44,6 +44,13 @@
         </div>
       </div>
       <div class="loops" id="loops"></div>
+      <div class="chip-panel px" id="chipPanel">
+        <div class="chip-head">
+          <button id="chipToggle" class="btn px chip-toggle"><span data-i18n="chip">8-BIT 模式</span><span class="keycap">P</span></button>
+          <span class="hint" data-i18n="chipHint">脉冲波 · LFSR 噪声 · 量化音高 · 阶梯包络，再在总线末端压位深与采样率</span>
+        </div>
+        <div class="chip-grid" id="chipGrid"></div>
+      </div>
     </section>
 
     <section class="panel px pads-panel">
@@ -60,6 +67,7 @@
         <div class="seq-controls">
           <button id="seqPlay" class="btn px accent" data-i18n="play">▶ 播放</button>
           <label><span data-i18n="bpm">BPM</span> <input id="bpm" class="px" type="number" min="50" max="220" value="124"> <input id="bpmRange" type="range" min="50" max="220" value="124"></label>
+          <label><span data-i18n="swing">摇摆</span> <input id="swing" type="range" min="0" max="60" value="0"> <span id="swingVal" class="val">0%</span></label>
           <button id="seqRandom" class="btn px" data-i18n="random">随机</button>
           <button id="seqClear" class="btn px" data-i18n="clear">清空</button>
         </div>

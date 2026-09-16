@@ -21,6 +21,7 @@ class PixelMachine {
     this.gearAngle = 0; this.gearSpeed = 0; this.gearVel = 0;
     this.rotationOn = false;
     this.droneOn = false; this.droneLevel = 0;
+    this.chipOn = false;
     this.beltOn = false; this.beltSpeed = 1; this.beltVel = 0; this.beltOffset = 0;
     this.pistonPhase = 0;
     this.pressT = -1;
@@ -108,6 +109,7 @@ class PixelMachine {
   }
   setRotation(on, speed = 1) { this.rotationOn = on; this.gearSpeed = on ? speed * 2.6 : 0; }
   setDrone(on) { this.droneOn = on; }
+  setChip(on) { this.chipOn = on; }
   setConveyor(on, speed = 1) { this.beltOn = on; this.beltSpeed = on ? speed : 0; }
   vent(strength = 1) {
     this.ventOpen = 1;
@@ -458,8 +460,11 @@ class PixelMachine {
       g.fillStyle = '#20242a'; g.fillRect(94 + i * 6, y0 + 24, 4, 4);
       g.fillStyle = c; g.fillRect(95 + i * 6, y0 + 25, 2, 2);
     });
+    g.fillStyle = '#20242a'; g.fillRect(109, y0 + 13, 5, 5);
+    g.fillStyle = this.chipOn ? (Math.floor(this.t * 4) % 2 ? '#ff5af0' : '#a030a0') : '#3a1a3a';
+    g.fillRect(110, y0 + 14, 3, 3);
     g.fillStyle = '#2a2e35';
-    for (let i = 0; i < 4; i++) g.fillRect(112, y0 + 14 + i * 3, 8, 1);
+    for (let i = 0; i < 4; i++) g.fillRect(116, y0 + 14 + i * 3, 6, 1);
     g.fillStyle = '#8b8f96'; g.fillRect(70, y0 + 33, 20, 2);
     g.fillStyle = '#c9a23a'; g.fillRect(70, y0 + 33, 4, 2); g.fillRect(78, y0 + 33, 4, 2); g.fillRect(86, y0 + 33, 4, 2);
   }

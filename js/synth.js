@@ -12,17 +12,101 @@ const Synth = (() => {
   const rnd = (a, b) => a + Math.random() * (b - a);
   const MIN = 0.0001;
 
+  /* ---------- 8-bit / chip mode ----------
+     Global switch consulted by the low-level helpers so every sound
+     (and the master bus) changes character at once. */
+  const chip = {
+    on: false,
+    bits: 6,        // output bit depth (2–12)
+    rate: 11025,    // output sample-and-hold rate (Hz)
+    noise: 0.25,    // grain: dither noise added before quantization (0–1)
+    frame: 60,      // envelope update rate (Hz) — NES-like stepped volume
+    arp: 0,         // arpeggio rate for tonal hits (Hz, 0 = off)
+    tune: 'penta',  // 'off' | 'semi' | 'penta' | 'major'
+    duty: 0.5,      // pulse width for oscillators (0.125 / 0.25 / 0.5)
+  };
+  function setChip(patch) { Object.assign(chip, patch); }
+  const SCALES = { semi: [0,1,2,3,4,5,6,7,8,9,10,11], penta: [0,2,4,7,9], major: [0,2,4,5,7,9,11] };
+  function qf(f) {
+    if (!chip.on || chip.tune === 'off' || f < 30 || !(f < 20000)) return f;
+    const n = 12 * Math.log2(f / 261.6256);           // semitones from C4
+    const oct = Math.floor(n / 12), pc = n - oct * 12;
+    const scale = SCALES[chip.tune] || SCALES.semi;
+    let best = scale[0], bd = 99;
+    for (const d of scale.concat([12])) { const dd = Math.abs(d - pc); if (dd < bd) { bd = dd; best = d; } }
+    return 261.6256 * Math.pow(2, (oct * 12 + best) / 12);
+  }
+  const waveCache = new WeakMap();
+  function pulseWave(ctx, duty) {
+    let m = waveCache.get(ctx);
+    if (!m) { m = {}; waveCache.set(ctx, m); }
+    if (!m[duty]) {
+      const N = 48, real = new Float32Array(N), imag = new Float32Array(N);
+      for (let n = 1; n < N; n++) real[n] = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * duty);
+      m[duty] = ctx.createPeriodicWave(real, imag);
+    }
+    return m[duty];
+  }
+  function setType(ctx, o, type) {
+    if (!chip.on || type === 'triangle') { o.type = type; return; }
+    o.setPeriodicWave(pulseWave(ctx, type === 'sawtooth' ? 0.25 : chip.duty));
+  }
+  /** arpeggiate a tonal oscillator when chip.arp > 0 */
+  function arp(o, f, t, dur, ratios = [1, 1.5, 2]) {
+    if (!chip.on || !chip.arp) return;
+    const step = 1 / chip.arp;
+    let i = 0;
+    for (let tt = t; tt < t + dur; tt += step, i++) o.frequency.setValueAtTime(qf(f * ratios[i % ratios.length]), tt);
+  }
+  /** bit/sample-rate crusher, shared by the live bus and offline renders */
+  function crushBlock(inp, out, st, sr) {
+    const step = Math.pow(2, chip.bits - 1);
+    const inc = chip.rate / sr;
+    const na = chip.noise * chip.noise * 0.15;
+    for (let i = 0; i < inp.length; i++) {
+      st.phase += inc;
+      if (st.phase >= 1) {
+        st.phase -= 1;
+        let x = inp[i] + (na ? (Math.random() * 2 - 1) * na : 0);
+        x = x > 1 ? 1 : x < -1 ? -1 : x;
+        st.held = Math.round(x * step) / step;
+      }
+      out[i] = st.held;
+    }
+  }
+  function crushBufferInPlace(buf) {
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      crushBlock(d, d, { phase: 1, held: 0 }, buf.sampleRate);
+    }
+  }
+
   /* ---------- shared buffers ---------- */
   const noiseCache = new WeakMap();
   function noiseBuffer(ctx) {
-    let b = noiseCache.get(ctx);
-    if (!b) {
-      const len = ctx.sampleRate * 2;
-      b = ctx.createBuffer(1, len, ctx.sampleRate);
-      const d = b.getChannelData(0);
+    let m = noiseCache.get(ctx);
+    if (!m) { m = {}; noiseCache.set(ctx, m); }
+    const key = chip.on ? 'lfsr' + chip.rate : 'white';
+    if (m[key]) return m[key];
+    const len = ctx.sampleRate * 2;
+    const b = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = b.getChannelData(0);
+    if (chip.on) {
+      // NES-style 15-bit LFSR, clocked at the chip sample rate (sample-and-hold)
+      let reg = 1, v = 0;
+      const hold = Math.max(1, Math.round(ctx.sampleRate / chip.rate));
+      for (let i = 0; i < len; i++) {
+        if (i % hold === 0) {
+          const fb = (reg & 1) ^ ((reg >> 1) & 1);
+          reg = (reg >> 1) | (fb << 14);
+          v = (reg & 1) ? 0.8 : -0.8;
+        }
+        d[i] = v;
+      }
+    } else {
       for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      noiseCache.set(ctx, b);
     }
+    m[key] = b;
     return b;
   }
   function noiseSrc(ctx, t, dur) {
@@ -69,15 +153,31 @@ const Synth = (() => {
   /* ---------- helpers ---------- */
   function env(ctx, t, peak, attack, decay, floor = MIN) {
     const g = ctx.createGain();
+    peak = Math.max(peak, MIN);
+    if (!chip.on) {
+      g.gain.setValueAtTime(MIN, t);
+      g.gain.exponentialRampToValueAtTime(peak, t + attack);
+      g.gain.exponentialRampToValueAtTime(floor, t + attack + decay);
+      return g;
+    }
+    // stepped envelope: volume only changes once per "frame"
+    const total = attack + decay;
+    const frames = Math.max(2, Math.ceil(total * chip.frame));
+    const K = 6;                                   // copies per frame → sharp steps
+    const curve = new Float32Array(frames * K);
+    for (let i = 0; i < frames; i++) {
+      const tt = (i / frames) * total;
+      const v = tt < attack ? MIN + (peak - MIN) * (tt / attack) : peak * Math.pow(floor / peak, (tt - attack) / decay);
+      for (let k = 0; k < K; k++) curve[i * K + k] = v;
+    }
     g.gain.setValueAtTime(MIN, t);
-    g.gain.exponentialRampToValueAtTime(Math.max(peak, MIN), t + attack);
-    g.gain.exponentialRampToValueAtTime(floor, t + attack + decay);
+    g.gain.setValueCurveAtTime(curve, t, total);
     return g;
   }
   function osc(ctx, type, f, t, dur) {
     const o = ctx.createOscillator();
-    o.type = type;
-    o.frequency.value = f;
+    setType(ctx, o, type);
+    o.frequency.value = qf(f);
     o.start(t);
     o.stop(t + dur);
     return o;
@@ -110,8 +210,32 @@ const Synth = (() => {
 
     input.connect(comp);
     input.connect(wetHp).connect(conv).connect(wet).connect(comp);
-    comp.connect(master).connect(ctx.destination);
-    return { input, wet, master, comp };
+    comp.connect(master);
+
+    // bit/sample-rate crusher, inserted only while chip mode is on
+    const out = ctx.createGain();
+    const crusher = ctx.createScriptProcessor(1024, 2, 2);
+    const states = [{ phase: 1, held: 0 }, { phase: 1, held: 0 }];
+    crusher.onaudioprocess = e => {
+      for (let c = 0; c < 2; c++) {
+        const inp = e.inputBuffer.getChannelData(c), o = e.outputBuffer.getChannelData(c);
+        if (chip.on) crushBlock(inp, o, states[c], ctx.sampleRate); else o.set(inp);
+      }
+    };
+    let routed = null;
+    const offline = typeof OfflineAudioContext !== 'undefined' && ctx instanceof OfflineAudioContext;
+    function route() {
+      const want = chip.on && !offline ? 'crush' : 'dry';
+      if (want === routed) return;
+      try { master.disconnect(); } catch (e) { /* not connected yet */ }
+      try { crusher.disconnect(); } catch (e) { /* ignore */ }
+      if (want === 'crush') { master.connect(crusher); crusher.connect(out); }
+      else master.connect(out);
+      routed = want;
+    }
+    route();
+    out.connect(ctx.destination);
+    return { input, wet, master, comp, out, route };
   }
 
   /* ============================================================
@@ -161,6 +285,7 @@ const Synth = (() => {
       const dec = 1.5 / (1 + i * 0.7);
       [-1.6, 1.6].forEach(det => {
         const oo = osc(ctx, 'sine', f0 * r * (1 + det / 1000), t, dec + 0.1);
+        arp(oo, f0 * r, t, dec);
         oo.connect(env(ctx, t, amps[i] * 0.5, 0.002, dec)).connect(out);
       });
     });
@@ -220,6 +345,7 @@ const Synth = (() => {
     const out = ctx.createGain(); out.gain.value = (o.gain ?? 1) * 0.32; out.connect(dest);
     P.forEach(([r, a, d]) => {
       const oo = osc(ctx, 'sine', f0 * r * rnd(0.999, 1.001), t, d + 0.1);
+      if (r <= 2) arp(oo, f0 * r, t, d, [1, 1.25, 1.5, 2]);
       oo.connect(env(ctx, t, a, 0.002, d)).connect(out);
     });
     const n = noiseSrc(ctx, t, 0.05);
@@ -263,8 +389,9 @@ const Synth = (() => {
     g.gain.exponentialRampToValueAtTime(MIN, t + 0.42);
     [587, 845].forEach(fr => {
       const oo = osc(ctx, 'square', fr * f, t, 0.5);
-      oo.frequency.setValueAtTime(fr * f * 1.03, t);
-      oo.frequency.exponentialRampToValueAtTime(fr * f, t + 0.02);
+      oo.frequency.setValueAtTime(qf(fr * f * 1.03), t);
+      oo.frequency.exponentialRampToValueAtTime(qf(fr * f), t + 0.02);
+      arp(oo, fr * f, t + 0.03, 0.4);
       oo.connect(bp);
     });
     const shaper = ctx.createWaveShaper();
@@ -318,6 +445,7 @@ const Synth = (() => {
     P.forEach(([r, a, d]) => {
       [-0.8, 0.8].forEach(det => {
         const oo = osc(ctx, 'sine', f0 * r * (1 + det / 1000), t, d + 0.1);
+        arp(oo, f0 * r, t, d);
         oo.connect(env(ctx, t, a * 0.5, 0.001, d)).connect(out);
       });
     });
@@ -545,7 +673,7 @@ const Synth = (() => {
     out.connect(dest);
 
     // motor
-    const motor = ctx.createOscillator(); motor.type = 'sawtooth';
+    const motor = ctx.createOscillator(); setType(ctx, motor, 'sawtooth');
     motor.frequency.setValueAtTime(28, t);
     motor.frequency.exponentialRampToValueAtTime(52 * speed, t + 1.6);
     const mlp = filt(ctx, 'lowpass', 340, 4);
@@ -751,7 +879,7 @@ const Synth = (() => {
   }
 
   function osc0(ctx, type, f) {
-    const o = ctx.createOscillator(); o.type = type; o.frequency.value = f; return o;
+    const o = ctx.createOscillator(); setType(ctx, o, type); o.frequency.value = qf(f); return o;
   }
 
 
@@ -838,7 +966,9 @@ const Synth = (() => {
     const oc = new OfflineAudioContext(2, Math.ceil(sampleRate * dur), sampleRate);
     const m = buildMaster(oc);
     fn(oc, m.input, 0.02, opts);
-    return oc.startRendering();
+    const buf = await oc.startRendering();
+    if (chip.on) crushBufferInPlace(buf);
+    return buf;
   }
   async function renderLoop(startFn, opts = {}, seconds = 6, sampleRate = 44100) {
     const oc = new OfflineAudioContext(2, Math.ceil(sampleRate * seconds), sampleRate);
@@ -846,7 +976,9 @@ const Synth = (() => {
     const h = startFn(oc, m.input, 0.02, opts);
     h.scheduleUntil(seconds - 1.2);
     h.stop(seconds - 1.2);
-    return oc.startRendering();
+    const buf = await oc.startRendering();
+    if (chip.on) crushBufferInPlace(buf);
+    return buf;
   }
   function encodeWAV(buf) {
     const chans = [];
@@ -881,6 +1013,7 @@ const Synth = (() => {
     PRESS_SLAM_AT,
     startRotation, startDrone, startConveyor,
     createRecorder, makeZip,
+    chip, setChip, crushBufferInPlace,
     renderOneShot, renderLoop, encodeWAV, encodeWAVChannels,
   };
 })();

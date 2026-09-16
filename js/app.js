@@ -70,6 +70,7 @@
     $('#seqPlay').textContent = seq.playing ? t.stop : t.play;
     if (!rec.active) $('#recBtn').textContent = t.record;
     $('#lang').value = lang;
+    if (typeof refreshChipValues === 'function') refreshChipValues();
   }
   const langSel = $('#lang');
   I18N_ORDER.forEach(code => {
@@ -94,6 +95,7 @@
     if (!AC) { toast(T().noAudio); return false; }
     ctx = new AC({ latencyHint: 'interactive' });
     bus = Synth.buildMaster(ctx);
+    bus.route();
     bus.master.gain.value = parseFloat($('#masterVol').value);
     bus.wet.gain.value = parseFloat($('#reverbWet').value);
     setInterval(tick, 40);
@@ -147,8 +149,9 @@
     for (const id in active) active[id].scheduleUntil(ahead);
     if (seq.playing) {
       while (seq.nextTime < ctx.currentTime + 0.14) {
-        scheduleStep(seq.cur, seq.nextTime);
-        seq.nextTime += 60 / seq.bpm / 4;
+        const stepDur = 60 / seq.bpm / 4;
+        scheduleStep(seq.cur, seq.nextTime + (seq.cur % 2 ? seq.swing * stepDur : 0));
+        seq.nextTime += stepDur;
         seq.cur = (seq.cur + 1) % seq.steps;
       }
     }
@@ -205,7 +208,7 @@
   const recBtn = $('#recBtn');
   recBtn.addEventListener('click', async () => {
     if (!ensureAudio()) return;
-    if (!recorder) recorder = Synth.createRecorder(ctx, bus.master);
+    if (!recorder) recorder = Synth.createRecorder(ctx, bus.out);
     if (!rec.active) {
       recorder.start();
       rec.active = true;
@@ -274,6 +277,58 @@
     loopsEl.appendChild(el);
   });
 
+
+  /* ---------- 8-bit / chip mode ---------- */
+  const CHIP_SLIDERS = [
+    { key: 'bits',  min: 2,    max: 12,    step: 1,    fmt: v => `${v} bit` },
+    { key: 'rate',  min: 2000, max: 44100, step: 100,  fmt: v => `${(v / 1000).toFixed(v < 10000 ? 1 : 0)} kHz` },
+    { key: 'noise', min: 0,    max: 1,     step: 0.01, fmt: v => `${Math.round(v * 100)}%` },
+    { key: 'frame', min: 12,   max: 120,   step: 1,    fmt: v => `${v} fps` },
+    { key: 'arp',   min: 0,    max: 40,    step: 1,    fmt: v => v === 0 ? T().off : `${v} Hz` },
+  ];
+  const CHIP_SELECTS = [
+    { key: 'tune', options: [['off', 'tuneOff'], ['semi', 'tuneSemi'], ['penta', 'tunePenta'], ['major', 'tuneMajor']] },
+    { key: 'duty', options: [['0.125', '12.5%'], ['0.25', '25%'], ['0.5', '50%']] },
+  ];
+  const chipGrid = $('#chipGrid');
+  CHIP_SLIDERS.forEach(sl => {
+    const row = document.createElement('label');
+    row.className = 'chip-row';
+    row.innerHTML = `<span class="chip-label" data-i18n="${sl.key}"></span>
+      <input type="range" id="chip-${sl.key}" min="${sl.min}" max="${sl.max}" step="${sl.step}" value="${Synth.chip[sl.key]}">
+      <span class="chip-val"></span>`;
+    const input = row.querySelector('input'), val = row.querySelector('.chip-val');
+    const show = () => { val.textContent = sl.fmt(Synth.chip[sl.key]); };
+    input.addEventListener('input', e => { Synth.setChip({ [sl.key]: parseFloat(e.target.value) }); show(); });
+    row._show = show;
+    chipGrid.appendChild(row);
+  });
+  CHIP_SELECTS.forEach(se => {
+    const row = document.createElement('label');
+    row.className = 'chip-row';
+    row.innerHTML = `<span class="chip-label" data-i18n="${se.key}"></span><select class="px" id="chip-${se.key}"></select>`;
+    const sel = row.querySelector('select');
+    se.options.forEach(([v, label]) => {
+      const o = document.createElement('option');
+      o.value = v; if (I18N.zh[label]) o.dataset.i18n = label; else o.textContent = label;
+      sel.appendChild(o);
+    });
+    sel.value = String(Synth.chip[se.key]);
+    sel.addEventListener('change', e => Synth.setChip({ [se.key]: se.key === 'duty' ? parseFloat(e.target.value) : e.target.value }));
+    chipGrid.appendChild(row);
+  });
+  function refreshChipValues() { chipGrid.querySelectorAll('.chip-row').forEach(r => r._show && r._show()); }
+  const chipToggle = $('#chipToggle');
+  function setChipMode(on) {
+    Synth.setChip({ on });
+    chipToggle.classList.toggle('on', on);
+    $('#chipPanel').classList.toggle('on', on);
+    document.body.classList.toggle('chip', on);
+    if (bus) bus.route();
+    pix.setChip(on);
+  }
+  chipToggle.addEventListener('click', () => setChipMode(!Synth.chip.on));
+
   /* ---------- pixel machine clicks ---------- */
   pix.onHit = id => {
     if (padById[id]) playPad(id);
@@ -296,7 +351,7 @@
 
   /* ---------- sequencer ---------- */
   const seq = {
-    steps: 16, bpm: 124, playing: false, cur: 0, nextTime: 0,
+    steps: 16, bpm: 124, swing: 0, playing: false, cur: 0, nextTime: 0,
     pattern: Object.fromEntries(PADS.map(p => [p.id, new Array(16).fill(false)])),
   };
   const PRESET = {
@@ -388,6 +443,7 @@
     seq.bpm = v; $('#bpm').value = v; $('#bpmRange').value = v;
   };
   $('#bpm').addEventListener('change', e => syncBpm(parseFloat(e.target.value)));
+  $('#swing').addEventListener('input', e => { seq.swing = parseFloat(e.target.value) / 100; $('#swingVal').textContent = `${e.target.value}%`; });
   $('#bpmRange').addEventListener('input', e => syncBpm(parseFloat(e.target.value)));
 
   /* ---------- keyboard (by physical key code, layout independent) ---------- */
@@ -398,6 +454,7 @@
   window.addEventListener('keydown', e => {
     if (e.repeat || e.target.matches('input, textarea, select')) return;
     if (e.code === 'Space') { e.preventDefault(); seq.playing ? stopSeq() : startSeq(); return; }
+    if (e.code === 'KeyP') { e.preventDefault(); setChipMode(!Synth.chip.on); return; }
     const fn = codeMap[e.code];
     if (fn) { e.preventDefault(); fn(); }
   });
