@@ -427,11 +427,20 @@
         b.addEventListener('click', () => {
           seq.pattern[p.id][s] = !seq.pattern[p.id][s];
           b.classList.toggle('on', seq.pattern[p.id][s]);
+          updateHeads();
           if (seq.pattern[p.id][s] && !seq.playing) playPad(p.id);
         });
         grid.appendChild(b);
       }
     });
+    updateHeads();
+  }
+  function updateHeads() {
+    for (let s = 0; s < seq.steps; s++) {
+      const lit = PADS.some(p => seq.pattern[p.id][s]);
+      const h = grid.querySelector(`.seq-head[data-step="${s}"]`);
+      if (h) h.classList.toggle('lit', lit);
+    }
   }
   buildGrid();
 

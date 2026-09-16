@@ -168,6 +168,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
   background: rgba(10,11,14,0.8); text-align: center; color: var(--muted); padding: 12px;
 }
 .overlay.hidden { display: none; }
+.silent-hint { max-width: 320px; }
 
 /* ---------- pads ---------- */
 .pads { display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: 10px; }
@@ -243,9 +244,13 @@ body.chip .brand-mark { color: var(--chip); }
 .seq-label { display: flex; align-items: center; gap: 8px; white-space: nowrap; padding-inline-end: 6px; cursor: pointer; overflow: hidden; }
 .seq-label span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .seq-label .dot { width: 8px; height: 8px; background: var(--pad-color, var(--accent)); flex: none; }
-.seq-head { height: 6px; background: var(--line); }
-.seq-head.beat { background: var(--line-hi); }
-.seq-head.cur { background: var(--accent-2); }
+/* column lamps: lit when any note sits in that column, bright on the current step */
+.seq-head { position: relative; height: 16px; background: #1b1e25; box-shadow: inset 1px 1px 0 var(--bevel-d), inset -1px -1px 0 var(--bevel-l); }
+.seq-head::after { content: ''; position: absolute; inset: 5px; background: #2a2f39; }
+.seq-head.beat::after { background: #343a46; }
+.seq-head.lit::after { background: #3fbf5c; box-shadow: 0 0 6px rgba(92,255,122,0.55); }
+.seq-head.cur::after { background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); }
+.seq-head.cur.lit::after { background: #fff2c0; }
 .step {
   aspect-ratio: 1; min-width: 22px; border: 0; background: var(--pad); cursor: pointer; padding: 0;
   box-shadow: inset 1px 1px 0 var(--bevel-l), inset -1px -1px 0 var(--bevel-d);
